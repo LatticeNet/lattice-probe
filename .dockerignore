@@ -1,0 +1,5 @@
+.git
+.github
+bench/engine-choice
+*.md
+!README.md

@@ -1,0 +1,53 @@
+name: ci
+
+on:
+  push:
+    branches: [main, integration]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # sing-box needs these for hysteria, hysteria2, tuic (QUIC) and Reality
+  # (uTLS). internal/engine refuses to compile without them.
+  TAGS: with_quic,with_utls
+
+jobs:
+  go:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.x'
+          check-latest: true
+      - name: gofmt
+        run: test -z "$(gofmt -l .)" || (gofmt -l . && exit 1)
+      - name: vet
+        run: go vet -tags "$TAGS" ./...
+      - name: test
+        # checkptr is turned off, the race detector is not: sing-vmess's
+        # Vision reads crypto/tls internals with pointer arithmetic that
+        # checkptr rejects (vless/vision.go:87), which would abort the run.
+        run: go test -race -gcflags=all=-d=checkptr=0 -tags "$TAGS" -timeout 15m ./...
+      - name: govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          govulncheck -tags "$TAGS" ./...
+
+  image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: docker/setup-buildx-action@v4
+      - name: build both architectures without pushing
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: false
+          provenance: false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
