@@ -16,7 +16,8 @@ import (
 var ErrNoAnswer = errors.New("no answer to a QUIC handshake")
 
 // TCPConnect times a plain TCP connect made by dial, outside any proxy
-// protocol, and closes the connection.
+// protocol, and closes the connection. dial should connect to an address
+// that is already resolved, or the time includes the name lookup.
 func TCPConnect(ctx context.Context, dial func(ctx context.Context) (net.Conn, error)) (time.Duration, error) {
 	start := time.Now()
 	conn, err := dial(ctx)

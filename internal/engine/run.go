@@ -97,6 +97,11 @@ func (r *run) checkServer(ctx context.Context) error {
 	var rtt time.Duration
 	var err error
 	if r.res.Server.Network == "tcp" {
+		// Resolve before the clock starts so the RTT times the connect
+		// alone; the dial below then reads the guard's checked cache.
+		if _, err := r.st.resolve(sctx, dest); err != nil {
+			return err
+		}
 		rtt, err = measure.TCPConnect(sctx, func(ctx context.Context) (net.Conn, error) {
 			return r.st.dial(ctx, N.NetworkTCP, dest)
 		})
