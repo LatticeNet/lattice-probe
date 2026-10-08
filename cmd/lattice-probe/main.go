@@ -23,6 +23,7 @@ import (
 	"time"
 
 	"github.com/LatticeNet/lattice-probe/internal/api"
+	"github.com/LatticeNet/lattice-probe/internal/client"
 	"github.com/LatticeNet/lattice-probe/internal/engine"
 	"github.com/LatticeNet/lattice-probe/internal/policy"
 	"github.com/LatticeNet/lattice-probe/internal/spec"
@@ -30,9 +31,17 @@ import (
 
 func main() {
 	showVersion := flag.Bool("version", false, "print the version and exit")
+	health := flag.Bool("health", false, "check the daemon serving LATTICE_PROBE_SOCKET and exit; the container health check")
 	flag.Parse()
 	if *showVersion {
 		fmt.Println("lattice-probe", spec.Version)
+		return
+	}
+	if *health {
+		if _, err := client.New(socketPath(), 3*time.Second).Health(); err != nil {
+			fmt.Fprintln(os.Stderr, "unhealthy:", err)
+			os.Exit(1)
+		}
 		return
 	}
 	log := slog.New(slog.NewJSONHandler(os.Stderr, nil))
@@ -42,11 +51,15 @@ func main() {
 	}
 }
 
-func serve(log *slog.Logger) error {
-	socket := os.Getenv("LATTICE_PROBE_SOCKET")
-	if socket == "" {
-		socket = spec.DefaultSocket
+func socketPath() string {
+	if socket := os.Getenv("LATTICE_PROBE_SOCKET"); socket != "" {
+		return socket
 	}
+	return spec.DefaultSocket
+}
+
+func serve(log *slog.Logger) error {
+	socket := socketPath()
 	targets, err := spec.LoadTargets(os.Getenv("LATTICE_PROBE_TARGETS_FILE"))
 	if err != nil {
 		return err

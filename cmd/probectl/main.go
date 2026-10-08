@@ -12,13 +12,12 @@ import (
 	"flag"
 	"fmt"
 	"io"
-	"net"
-	"net/http"
 	"os"
 	"strings"
 	"text/tabwriter"
 	"time"
 
+	"github.com/LatticeNet/lattice-probe/internal/client"
 	"github.com/LatticeNet/lattice-probe/internal/engine"
 	"github.com/LatticeNet/lattice-probe/internal/policy"
 	"github.com/LatticeNet/lattice-probe/internal/spec"
@@ -87,9 +86,14 @@ func run() int {
 
 	var res *spec.Result
 	if *socket != "" {
-		res, err = remote(*socket, req)
+		res, err = client.New(*socket, 40*time.Second).Probe(req)
 	} else {
 		res, err = local(req, *allow, *targetsFile)
+	}
+	var refusal *spec.RequestError
+	if errors.As(err, &refusal) {
+		fmt.Fprintf(os.Stderr, "probectl: refused (%s): %s\n", refusal.Stage, refusal.Message)
+		return 2
 	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "probectl:", err)
@@ -158,64 +162,13 @@ func local(req *spec.Request, allowList, targetsFile string) (*spec.Result, erro
 		return nil, err
 	}
 	defer eng.Close()
-	res, err := eng.Run(context.Background(), req)
-	var refusal *spec.RequestError
-	if errors.As(err, &refusal) {
-		return nil, fmt.Errorf("refused (%s): %s", refusal.Stage, refusal.Message)
-	}
-	return res, err
-}
-
-func unixClient(path string, timeout time.Duration) *http.Client {
-	return &http.Client{
-		Timeout: timeout,
-		Transport: &http.Transport{
-			DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-				var d net.Dialer
-				return d.DialContext(ctx, "unix", path)
-			},
-		},
-	}
-}
-
-func remote(path string, req *spec.Request) (*spec.Result, error) {
-	body, err := json.Marshal(req)
-	if err != nil {
-		return nil, err
-	}
-	resp, err := unixClient(path, 40*time.Second).Post("http://probe/v1/probe", "application/json", bytes.NewReader(body))
-	if err != nil {
-		return nil, err
-	}
-	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil {
-		return nil, err
-	}
-	if resp.StatusCode != http.StatusOK {
-		var e spec.ErrorBody
-		if json.Unmarshal(data, &e) == nil && e.Error.Message != "" {
-			return nil, fmt.Errorf("refused with %d (%s): %s", resp.StatusCode, e.Error.Stage, e.Error.Message)
-		}
-		return nil, fmt.Errorf("probe answered %d", resp.StatusCode)
-	}
-	var res spec.Result
-	if err := json.Unmarshal(data, &res); err != nil {
-		return nil, err
-	}
-	return &res, nil
+	return eng.Run(context.Background(), req)
 }
 
 func checkHealth(path string) int {
-	resp, err := unixClient(path, 3*time.Second).Get("http://probe/v1/health")
+	h, err := client.New(path, 3*time.Second).Health()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "probectl: health:", err)
-		return 1
-	}
-	defer resp.Body.Close()
-	var h spec.Health
-	if resp.StatusCode != http.StatusOK || json.NewDecoder(resp.Body).Decode(&h) != nil {
-		fmt.Fprintln(os.Stderr, "probectl: health answered", resp.StatusCode)
 		return 1
 	}
 	fmt.Printf("ok: probe %s, %s %s, up %d s, %d/%d in flight\n", h.ProbeVersion, h.Engine, h.CoreVersion, h.UptimeS, h.Inflight, h.MaxInflight)

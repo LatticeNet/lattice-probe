@@ -19,14 +19,14 @@ RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache
       -trimpath \
       -tags with_quic,with_utls \
       -ldflags "-s -w ${VERSION:+-X github.com/LatticeNet/lattice-probe/internal/spec.Version=${VERSION}}" \
-      -o /out/ ./cmd/lattice-probe ./cmd/probectl \
+      -o /out/ ./cmd/lattice-probe \
  && mkdir -p /out/run/lattice-probe
 
 # distroless static: CA certificates, /etc/passwd with uid 65532, no shell.
 FROM gcr.io/distroless/static-debian12:nonroot
 ARG VERSION=
 ARG COMMIT=unknown
-COPY --from=build /out/lattice-probe /out/probectl /usr/local/bin/
+COPY --from=build /out/lattice-probe /usr/local/bin/
 # The socket directory is normally a volume shared with lattice-server; it
 # exists here so the image also runs with a read-only root and no volume.
 COPY --from=build --chown=65532:65532 /out/run/lattice-probe /run/lattice-probe
@@ -38,5 +38,5 @@ LABEL org.opencontainers.image.title="Lattice Probe" \
       org.opencontainers.image.licenses="GPL-3.0-or-later" \
       org.opencontainers.image.version="${VERSION}" \
       org.opencontainers.image.revision="${COMMIT}"
-HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/usr/local/bin/probectl", "-health"]
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 CMD ["/usr/local/bin/lattice-probe", "-health"]
 ENTRYPOINT ["/usr/local/bin/lattice-probe"]

@@ -106,7 +106,7 @@ docker run -d --name lattice-probe \
   ghcr.io/latticenet/lattice-probe:<tag>
 ```
 
-The image is distroless, runs as uid and gid 65532 and works with a read-only root. lattice-server mounts the same volume and needs gid 65532 as a supplementary group to use the 0660 socket. Keep the probe off the network that reaches lattice-server's port, so a check that is wrong still cannot aim a pasted outbound at the control plane. The health check runs `probectl -health`.
+The image is distroless, runs as uid and gid 65532 and works with a read-only root. lattice-server mounts the same volume and needs gid 65532 as a supplementary group to use the 0660 socket. Keep the probe off the network that reaches lattice-server's port, so a check that is wrong still cannot aim a pasted outbound at the control plane. The image holds only the daemon; its health check runs `lattice-probe -health`.
 
 Environment:
 
@@ -116,7 +116,7 @@ Environment:
 | `LATTICE_PROBE_TARGETS_FILE` | none | JSON `{"targets":[...]}` that replaces the built-in list; ids match `^[a-z0-9-]{1,40}$`, URLs are https |
 | `LATTICE_PROBE_ALLOW_PREFIXES` | none | CIDRs exempt from the address policy |
 
-`probectl` tests one outbound file, in-process or against a running daemon:
+`probectl`, built from `./cmd/probectl`, tests one outbound file in-process or against a running daemon:
 
 ```sh
 probectl outbound.json                    # in-process

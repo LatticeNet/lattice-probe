@@ -9,6 +9,6 @@
 - Measures: validity, a plain server check (TCP connect, or a QUIC handshake attempt with salamander and xplus obfuscation), cold and warm delay per target with min/p50/p90 over 1 to 10 samples, exit IP and location, UDP through a DNS query, and an opt-in throughput download capped at 25 MB.
 - Policy: allowed outbound types, request-local detours without cycles, configured targets only, no `*_path` fields, and global unicast server addresses, enforced again at dial time by a guard outbound every probed outbound detours to.
 - Credentials never reach a log; error text has request credentials redacted.
-- `probectl` to test one outbound file in-process or against the socket, and `-health` for container health checks.
+- `probectl` to test one outbound file in-process or against the socket; `lattice-probe -health` for the container health check.
 - Distroless image for linux/amd64 and linux/arm64, uid 65532, read-only root, built from `v*` tags.
 - `bench/engine-choice`, the sing-box versus mihomo benchmark behind design 27, and `bench/probebench` for the engine's own numbers.
