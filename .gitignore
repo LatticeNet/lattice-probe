@@ -1,0 +1,9 @@
+# Build output
+/lattice-probe
+/probectl
+/probebench
+/dist/
+
+# Bench runs
+lab.json
+*.out
