@@ -4,13 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"net/netip"
+	"sort"
 	"testing"
 	"time"
 
+	"github.com/LatticeNet/lattice-probe/internal/policy"
 	"github.com/LatticeNet/lattice-probe/internal/spec"
 
+	"github.com/sagernet/sing-box/adapter"
 	"github.com/sagernet/sing-box/option"
+	"github.com/sagernet/sing/common"
 	sjson "github.com/sagernet/sing/common/json"
+	"github.com/sagernet/sing/service"
 )
 
 // slowResolver answers every name with one address after a delay, like a
@@ -69,5 +74,74 @@ func TestDecoderFoldsFieldNames(t *testing.T) {
 	}
 	if trojan.TLS == nil || trojan.TLS.CertificatePath != "/etc/passwd" {
 		t.Errorf("tls %+v, want certificate_PATH read as certificate_path", trojan.TLS)
+	}
+}
+
+// startHookOutbounds is one constructible config per allowed type.
+var startHookOutbounds = map[string]string{
+	"shadowsocks": `{"method":"2022-blake3-aes-128-gcm","password":"AAAAAAAAAAAAAAAAAAAAAA=="}`,
+	"vmess":       `{"uuid":"b831381d-6324-4d53-ad4f-8cda48b30811","security":"auto"}`,
+	"vless":       `{"uuid":"b831381d-6324-4d53-ad4f-8cda48b30811"}`,
+	"trojan":      `{"password":"p","tls":{"enabled":true,"server_name":"example.com"}}`,
+	"hysteria":    `{"up_mbps":10,"down_mbps":10,"auth_str":"p","tls":{"enabled":true,"server_name":"example.com"}}`,
+	"hysteria2":   `{"password":"p","tls":{"enabled":true,"server_name":"example.com"}}`,
+	"tuic":        `{"uuid":"b831381d-6324-4d53-ad4f-8cda48b30811","password":"p","tls":{"enabled":true,"server_name":"example.com"}}`,
+	"shadowtls":   `{"version":3,"password":"p","tls":{"enabled":true,"server_name":"example.com"}}`,
+	"anytls":      `{"password":"p","tls":{"enabled":true,"server_name":"example.com"}}`,
+	"socks":       `{"version":"5"}`,
+	"http":        `{}`,
+	"ssh":         `{"user":"root","password":"p"}`,
+}
+
+// TestAllowedTypesHaveNoStartHook pins an assumption of Run's cleanup. When
+// a start hook fails, sing-box's Manager.Create returns the error without
+// closing the outbound it built and without registering it, so Run has no
+// handle to remove. That is only safe while no allowed type has a start
+// hook; a sing-box bump that adds one fails here instead of leaking.
+func TestAllowedTypesHaveNoStartHook(t *testing.T) {
+	e := newEngine(t, sharedLab(t))
+	registry := service.FromContext[adapter.OutboundRegistry](e.ctx)
+	types := make([]string, 0, len(policy.AllowedTypes))
+	for typ := range policy.AllowedTypes {
+		types = append(types, typ)
+	}
+	sort.Strings(types)
+	for _, typ := range types {
+		t.Run(typ, func(t *testing.T) {
+			body, ok := startHookOutbounds[typ]
+			if !ok {
+				t.Fatalf("no config for allowed type %s; add one so its start hooks are checked", typ)
+			}
+			fields := map[string]json.RawMessage{}
+			if err := json.Unmarshal([]byte(body), &fields); err != nil {
+				t.Fatal(err)
+			}
+			fields["type"], _ = json.Marshal(typ)
+			fields["tag"], _ = json.Marshal("hook-" + typ)
+			fields["server"], _ = json.Marshal("1.1.1.1")
+			fields["server_port"], _ = json.Marshal(443)
+			raw, _ := json.Marshal(fields)
+			opt, err := sjson.UnmarshalExtendedContext[option.Outbound](e.ctx, raw)
+			if err != nil {
+				t.Fatalf("decode: %v", err)
+			}
+			ob, err := registry.CreateOutbound(e.ctx, e.box.Router(), e.box.LogFactory().NewLogger("test"), opt.Tag, opt.Type, opt.Options)
+			if err != nil {
+				t.Fatalf("construct: %v", err)
+			}
+			defer common.Close(ob)
+			if _, ok := ob.(adapter.Lifecycle); ok {
+				t.Errorf("%T has Start(stage)", ob)
+			}
+			if _, ok := ob.(interface{ PreStart() error }); ok {
+				t.Errorf("%T has PreStart", ob)
+			}
+			if _, ok := ob.(interface{ Start() error }); ok {
+				t.Errorf("%T has Start", ob)
+			}
+			if _, ok := ob.(interface{ PostStart() error }); ok {
+				t.Errorf("%T has PostStart", ob)
+			}
+		})
 	}
 }
