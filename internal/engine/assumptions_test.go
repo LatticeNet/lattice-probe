@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"github.com/LatticeNet/lattice-probe/internal/spec"
+
+	"github.com/sagernet/sing-box/option"
+	sjson "github.com/sagernet/sing/common/json"
 )
 
 // slowResolver answers every name with one address after a delay, like a
@@ -46,5 +49,25 @@ func TestServerRTTExcludesNameLookup(t *testing.T) {
 	}
 	if res.Server.Address != "slow.example:"+itoa(l.Ports["shadowsocks"]) {
 		t.Errorf("server address %q", res.Server.Address)
+	}
+}
+
+// TestDecoderFoldsFieldNames records why policy.Parse refuses folded field
+// names: the sing-box decoder accepts them, at the top level and nested.
+// If this starts failing after a sing-box bump, the decoder stopped
+// folding and the refusal is merely strict, not wrong.
+func TestDecoderFoldsFieldNames(t *testing.T) {
+	e := newEngine(t, sharedLab(t))
+	raw := []byte(`{"type":"trojan","tag":"x","server":"8.8.8.8","ſerver":"1.1.1.1","server_port":1,"password":"p","tls":{"enabled":true,"certificate_PATH":"/etc/passwd"}}`)
+	opt, err := sjson.UnmarshalExtendedContext[option.Outbound](e.ctx, raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trojan := opt.Options.(*option.TrojanOutboundOptions)
+	if trojan.Server != "1.1.1.1" {
+		t.Errorf("server decoded as %q, want the folded field's value", trojan.Server)
+	}
+	if trojan.TLS == nil || trojan.TLS.CertificatePath != "/etc/passwd" {
+		t.Errorf("tls %+v, want certificate_PATH read as certificate_path", trojan.TLS)
 	}
 }

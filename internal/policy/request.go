@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/LatticeNet/lattice-probe/internal/spec"
 )
@@ -184,6 +185,11 @@ func parseOutbound(i int, raw json.RawMessage) (Outbound, error) {
 	if err := json.Unmarshal(raw, &ob.Raw); err != nil || ob.Raw == nil {
 		return ob, spec.Malformed(fmt.Sprintf("outbounds[%d] is not a JSON object", i))
 	}
+	var tree any
+	_ = json.Unmarshal(raw, &tree)
+	if msg := foldedFieldName(tree, ""); msg != "" {
+		return ob, spec.Malformed(fmt.Sprintf("outbounds[%d]: %s", i, msg))
+	}
 	str := func(key string, required bool) (string, error) {
 		v, ok := ob.Raw[key]
 		if !ok || string(v) == "null" {
@@ -226,8 +232,6 @@ func parseOutbound(i int, raw json.RawMessage) (Outbound, error) {
 	if ob.Port, err = serverPort(i, ob); err != nil {
 		return ob, err
 	}
-	var tree any
-	_ = json.Unmarshal(raw, &tree)
 	if path := findPathField(tree, ""); path != "" {
 		return ob, spec.Refuse(fmt.Sprintf("outbounds[%d]: %s reads a file on the probe host, which is not allowed; inline the value instead", i, path))
 	}
@@ -262,6 +266,50 @@ func serverPort(i int, ob Outbound) (uint16, error) {
 	return 0, spec.Malformed(fmt.Sprintf("outbounds[%d]: server_port is required", i))
 }
 
+// foldedFieldName explains the first field name the sing-box decoder could
+// match to a different field than the one this package reads. The decoder
+// matches names case-insensitively, with Unicode folding ("ſerver" with
+// U+017F decodes as server), while Parse and the engine read fields by
+// exact name, so a folded name would make the policy check one server and
+// sing-box dial another. Every outbound option is lowercase ASCII, so top
+// level names must be exactly that. Nested objects include maps whose keys
+// are data, such as transport headers, so there only non-ASCII names are
+// refused; nested lookups here (secrets, file paths) ignore ASCII case.
+func foldedFieldName(v any, at string) string {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			path := k
+			if at != "" {
+				path = at + "." + k
+			}
+			for _, r := range k {
+				if r >= utf8.RuneSelf {
+					return fmt.Sprintf("field name %q is not ASCII; sing-box option names are lowercase ASCII", safeName(path))
+				}
+			}
+			if at == "" && k != strings.ToLower(k) {
+				return fmt.Sprintf("field name %q must be lowercase, as every sing-box option name is", safeName(k))
+			}
+			if msg := foldedFieldName(t[k], path); msg != "" {
+				return msg
+			}
+		}
+	case []any:
+		for i, e := range t {
+			if msg := foldedFieldName(e, fmt.Sprintf("%s[%d]", at, i)); msg != "" {
+				return msg
+			}
+		}
+	}
+	return ""
+}
+
 // findPathField returns the JSON path of the first field that names a file
 // on the probe host (certificate_path, key_path, private_key_path, ...).
 func findPathField(v any, at string) string {
@@ -277,7 +325,7 @@ func findPathField(v any, at string) string {
 			if at != "" {
 				path = at + "." + k
 			}
-			if strings.HasSuffix(k, "_path") && carriesValue(t[k]) {
+			if strings.HasSuffix(strings.ToLower(k), "_path") && carriesValue(t[k]) {
 				return path
 			}
 			if p := findPathField(t[k], path); p != "" {

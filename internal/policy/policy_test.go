@@ -169,3 +169,40 @@ func TestParseRefusesNonProxyTypes(t *testing.T) {
 		}
 	}
 }
+
+// TestParseRefusesFoldedFieldNames covers names the sing-box decoder
+// matches case-insensitively, with Unicode folding, while Parse reads
+// fields by exact name: "ſerver" (U+017F) decodes as server, so the
+// policy and the decoder would see different servers.
+func TestParseRefusesFoldedFieldNames(t *testing.T) {
+	for name, ob := range map[string]string{
+		"long s beside server": `{"type":"socks","tag":"a","server":"8.8.8.8","ſerver":"1.1.1.1","server_port":1}`,
+		"long s in port":       `{"type":"socks","tag":"a","server":"8.8.8.8","server_port":1,"ſerver_port":2}`,
+		"long s in a secret":   `{"type":"hysteria2","tag":"a","server":"8.8.8.8","server_port":1,"obfs":{"type":"salamander","paſſword":"hunter22"}}`,
+		"kelvin sign":          `{"type":"vless","tag":"a","server":"8.8.8.8","server_port":1,"tls":{"reality":{"public_Key":"x"}}}`,
+		"uppercase server":     `{"type":"socks","tag":"a","Server":"1.1.1.1","server":"8.8.8.8","server_port":1}`,
+		"uppercase detour":     `{"type":"socks","tag":"a","server":"8.8.8.8","server_port":1,"DETOUR":"b"}`,
+	} {
+		_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets())
+		var re *spec.RequestError
+		if !errors.As(err, &re) || re.Stage != spec.StageRequest || !strings.Contains(re.Message, "field name") {
+			t.Errorf("%s: %v, want a request refusal naming the field", name, err)
+		}
+	}
+	// Header names are data, not option fields, and keep their case.
+	ok := `{"type":"vmess","tag":"a","server":"8.8.8.8","server_port":1,"uuid":"u","transport":{"type":"ws","headers":{"Host":"cdn.example"}}}`
+	if _, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ok)}}, spec.DefaultTargets()); err != nil {
+		t.Errorf("a mixed-case header name was refused: %v", err)
+	}
+}
+
+// TestParseRefusesFoldedFilePaths: the decoder reads certificate_PATH into
+// certificate_path, so the file check must not depend on case either.
+func TestParseRefusesFoldedFilePaths(t *testing.T) {
+	ob := `{"type":"trojan","tag":"a","server":"1.1.1.1","server_port":1,"tls":{"enabled":true,"certificate_PATH":"/etc/passwd"}}`
+	_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets())
+	var re *spec.RequestError
+	if !errors.As(err, &re) || re.Stage != spec.StagePolicy || !strings.Contains(re.Message, "certificate_PATH") {
+		t.Errorf("%v, want a policy refusal of tls.certificate_PATH", err)
+	}
+}
