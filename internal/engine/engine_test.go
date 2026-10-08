@@ -228,6 +228,19 @@ func TestStages(t *testing.T) {
 			t.Errorf("a refused connect took %s", time.Since(start))
 		}
 	})
+	t.Run("quic server down", func(t *testing.T) {
+		port, err := closedUDPPort()
+		if err != nil {
+			t.Fatal(err)
+		}
+		ob := l.Outbound("hysteria2", "", "line")
+		ob["server_port"] = port
+		raw, _ := json.Marshal(ob)
+		res := mustRun(t, newEngine(t, l, func(c *Config) { c.SampleTimeout = 500 * time.Millisecond }), request(raw))
+		if !res.Valid || res.Stage != spec.StageServer || res.Server.Reachable || res.Server.Network != "udp" {
+			t.Fatalf("stage %s, server %+v, error %q", res.Stage, res.Server, res.Error)
+		}
+	})
 	t.Run("timeout", func(t *testing.T) {
 		host, port := splitHostPort(t, l.Blackhole)
 		ob := l.Outbound("vless", "", "line")

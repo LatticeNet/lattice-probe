@@ -62,12 +62,14 @@ func (r *run) measure(ctx context.Context) (spec.Stage, string) {
 	}
 	if !out.anyOK && !out.gotResponse {
 		switch {
+		case serverErr != nil:
+			// Nothing worked and the QUIC check heard nothing either: the
+			// server is the most specific explanation there is.
+			return spec.StageServer, "server unreachable: " + measure.OneLine(serverErr)
 		case errors.Is(ctx.Err(), context.DeadlineExceeded):
 			return spec.StageTimeout, fmt.Sprintf("probe ran out of time after %d ms: %s", r.plan.Timeout.Milliseconds(), out.firstErr)
 		case out.timeouts > 0 && out.otherFails == 0:
 			return spec.StageTimeout, out.firstErr
-		case serverErr != nil:
-			return spec.StageServer, "server unreachable: " + measure.OneLine(serverErr)
 		default:
 			return spec.StageHandshake, out.firstErr
 		}

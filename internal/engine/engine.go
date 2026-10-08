@@ -167,6 +167,15 @@ func (e *Engine) Run(ctx context.Context, req *spec.Request) (*spec.Result, erro
 		tags[i] = fmt.Sprintf("probe-%d-%d", n, i)
 	}
 	guardTag := fmt.Sprintf("probe-%d-guard", n)
+	// sing-box names outbounds by tag in some errors; show the caller's.
+	pairs := []string{guardTag, "probe guard"}
+	for i, ob := range plan.Outbounds {
+		pairs = append(pairs, tags[i], ob.Tag)
+	}
+	names := strings.NewReplacer(pairs...)
+	finish := func(stage spec.Stage, msg string) *spec.Result {
+		return e.finish(res, plan, began, stage, names.Replace(msg))
+	}
 
 	opts := make([]option.Outbound, len(plan.Outbounds))
 	for i, ob := range plan.Outbounds {
@@ -176,7 +185,7 @@ func (e *Engine) Run(ctx context.Context, req *spec.Request) (*spec.Result, erro
 		}
 		opts[i], err = sjson.UnmarshalExtendedContext[option.Outbound](e.ctx, raw)
 		if err != nil {
-			return e.finish(res, plan, began, spec.StageDecode, fmt.Sprintf("outbounds[%d] (%s): %s", i, ob.Type, measure.OneLine(err))), nil
+			return finish(spec.StageDecode, fmt.Sprintf("outbounds[%d] (%s): %s", i, ob.Type, measure.OneLine(err))), nil
 		}
 	}
 
@@ -202,7 +211,7 @@ func (e *Engine) Run(ctx context.Context, req *spec.Request) (*spec.Result, erro
 	created = append(created, guardTag)
 	for _, i := range plan.Order {
 		if err := manager.Create(octx, e.box.Router(), logger, tags[i], opts[i].Type, opts[i].Options); err != nil {
-			return e.finish(res, plan, began, spec.StageCreate, fmt.Sprintf("outbounds[%d] (%s): %s", i, plan.Outbounds[i].Type, measure.OneLine(err))), nil
+			return finish(spec.StageCreate, fmt.Sprintf("outbounds[%d] (%s): %s", i, plan.Outbounds[i].Type, measure.OneLine(err))), nil
 		}
 		created = append(created, tags[i])
 	}
@@ -213,7 +222,7 @@ func (e *Engine) Run(ctx context.Context, req *spec.Request) (*spec.Result, erro
 		if errors.As(err, &refusal) {
 			return nil, spec.Refuse(refusal.Error())
 		}
-		return e.finish(res, plan, began, spec.StageServer, measure.OneLine(err)), nil
+		return finish(spec.StageServer, measure.OneLine(err)), nil
 	}
 
 	test, ok := manager.Outbound(tags[plan.Test])
@@ -225,7 +234,10 @@ func (e *Engine) Run(ctx context.Context, req *spec.Request) (*spec.Result, erro
 	if refusal := st.Refused(); refusal != nil {
 		return nil, spec.Refuse(refusal.Error())
 	}
-	return e.finish(res, plan, began, stage, msg), nil
+	for i := range res.Targets {
+		res.Targets[i].Error = names.Replace(res.Targets[i].Error)
+	}
+	return finish(stage, msg), nil
 }
 
 func (e *Engine) finish(res *spec.Result, plan *policy.Plan, began time.Time, stage spec.Stage, msg string) *spec.Result {

@@ -36,6 +36,17 @@ func closedPort() (int, error) {
 	return port, nil
 }
 
+// closedUDPPort returns a loopback UDP port nothing listens on.
+func closedUDPPort() (int, error) {
+	pc, err := net.ListenPacket("udp", "127.0.0.1:0")
+	if err != nil {
+		return 0, err
+	}
+	port := pc.LocalAddr().(*net.UDPAddr).Port
+	pc.Close()
+	return port, nil
+}
+
 // countingListener listens on loopback and counts accepted connections.
 func countingListener(t testing.TB) (string, func() int64) {
 	t.Helper()
