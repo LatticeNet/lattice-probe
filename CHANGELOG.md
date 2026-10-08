@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.0-alpha.2 (2026-10-08)
+
+### Added
+
+- `LATTICE_PROBE_DENY_PREFIXES`: comma-separated prefixes the probe always refuses, checked before `LATTICE_PROBE_ALLOW_PREFIXES` so deny wins, and matched against the IPv4 address inside a mapped, NAT64 or 6to4 form. Deployments set it to the probe host's own public addresses, which are global unicast and so were not refused before, and which reach services the host's firewall hides from the internet when dialled from the probe's bridge network.
+
 ## 0.1.0-alpha.1 (2026-10-08)
 
 ### Added

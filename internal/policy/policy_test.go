@@ -99,6 +99,47 @@ func TestAllowList(t *testing.T) {
 	}
 }
 
+func TestDenyList(t *testing.T) {
+	deny, err := ParsePrefixes("141.11.77.182, 2001:db9:1::/48")
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &Policy{Deny: deny}
+	for _, addr := range []string{
+		"141.11.77.182",
+		"::ffff:141.11.77.182", // the mapped form
+		"64:ff9b::8d0b:4db6",   // the NAT64 form of 141.11.77.182
+		"2002:8d0b:4db6::1",    // the 6to4 form of 141.11.77.182
+		"2001:db9:1::5",
+	} {
+		r := p.Check(netip.MustParseAddr(addr))
+		if r == nil {
+			t.Errorf("%s allowed despite the denylist", addr)
+			continue
+		}
+		if !strings.Contains(r.Reason, "denied by the probe's address policy") {
+			t.Errorf("%s: reason %q does not name the denylist", addr, r.Reason)
+		}
+	}
+	for _, addr := range []string{"141.11.77.183", "8.8.8.8", "2001:db9:2::1"} {
+		if r := p.Check(netip.MustParseAddr(addr)); r != nil {
+			t.Errorf("%s refused outside the denylist: %v", addr, r)
+		}
+	}
+	// Deny wins over Allow.
+	both := &Policy{Allow: []netip.Prefix{netip.MustParsePrefix("141.11.77.0/24")}, Deny: deny}
+	if both.Check(netip.MustParseAddr("141.11.77.182")) == nil {
+		t.Error("an allowed prefix overrode the denylist")
+	}
+	if both.Check(netip.MustParseAddr("141.11.77.1")) != nil {
+		t.Error("the allowlist stopped working next to a denylist")
+	}
+	// Non-global classes keep their own reason when not denied.
+	if r := p.Check(netip.MustParseAddr("127.0.0.1")); r == nil || r.Reason != "loopback" {
+		t.Errorf("loopback with a denylist: %v", r)
+	}
+}
+
 func TestRedact(t *testing.T) {
 	raw := map[string]json.RawMessage{}
 	_ = json.Unmarshal([]byte(`{"type":"vless","uuid":"0b9c1bd8-aaaa","password":"hunter22","tls":{"reality":{"short_id":"abcd1234","public_key":"PUBLICKEY"}},"headers":{"Authorization":"Bearer tok123456"},"tag":"x"}`), &raw)

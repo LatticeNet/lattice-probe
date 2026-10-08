@@ -23,6 +23,12 @@ type Policy struct {
 	// fall in a refused class, for example a lab network. Empty by default.
 	// It never permits unspecified or multicast addresses.
 	Allow []netip.Prefix
+
+	// Deny lists prefixes refused even though they are global unicast, for
+	// example the probe host's own public addresses, so a pasted outbound
+	// cannot reach services the host only exposes to itself. Deny wins over
+	// Allow. Empty by default.
+	Deny []netip.Prefix
 }
 
 // Refusal says why an address may not be dialled.
@@ -100,6 +106,11 @@ var (
 
 // Check returns nil when a may be dialled, or a Refusal saying why not.
 func (p *Policy) Check(a netip.Addr) *Refusal {
+	if p != nil && len(p.Deny) > 0 {
+		if r := p.denied(a); r != nil {
+			return r
+		}
+	}
 	reason := classify(a)
 	if reason == "" {
 		return nil
@@ -113,6 +124,37 @@ func (p *Policy) Check(a netip.Addr) *Refusal {
 		}
 	}
 	return &Refusal{Addr: a, Reason: reason}
+}
+
+// denied reports a Refusal when a, or the IPv4 address a NAT64 or 6to4 form
+// of it embeds, falls in a Deny prefix.
+func (p *Policy) denied(a netip.Addr) *Refusal {
+	if !a.IsValid() {
+		return nil
+	}
+	a = a.WithZone("").Unmap()
+	candidates := []netip.Addr{a}
+	if a.Is6() {
+		b := a.As16()
+		if nat64.Contains(a) {
+			candidates = append(candidates, netip.AddrFrom4([4]byte{b[12], b[13], b[14], b[15]}))
+		}
+		if sixToFour.Contains(a) {
+			candidates = append(candidates, netip.AddrFrom4([4]byte{b[2], b[3], b[4], b[5]}))
+		}
+	}
+	for _, c := range candidates {
+		for _, d := range p.Deny {
+			if d.Contains(c) {
+				reason := "denied by the probe's address policy (" + d.String() + ")"
+				if c != a {
+					reason = fmt.Sprintf("a form of %s, which is %s", c, reason)
+				}
+				return &Refusal{Addr: a, Reason: reason}
+			}
+		}
+	}
+	return nil
 }
 
 // classify returns why a is refused, or "" when it is global unicast.
@@ -156,7 +198,8 @@ func classify(a netip.Addr) string {
 }
 
 // ParsePrefixes reads a comma-separated list of CIDR prefixes, such as the
-// value of LATTICE_PROBE_ALLOW_PREFIXES. A bare address means a single host.
+// value of LATTICE_PROBE_ALLOW_PREFIXES or LATTICE_PROBE_DENY_PREFIXES. A bare
+// address means a single host.
 func ParsePrefixes(list string) ([]netip.Prefix, error) {
 	var out []netip.Prefix
 	for _, field := range strings.Split(list, ",") {
@@ -167,14 +210,14 @@ func ParsePrefixes(list string) ([]netip.Prefix, error) {
 		if !strings.Contains(field, "/") {
 			a, err := netip.ParseAddr(field)
 			if err != nil {
-				return nil, fmt.Errorf("allow prefix %q: %w", field, err)
+				return nil, fmt.Errorf("prefix %q: %w", field, err)
 			}
 			out = append(out, netip.PrefixFrom(a.Unmap(), a.Unmap().BitLen()))
 			continue
 		}
 		p, err := netip.ParsePrefix(field)
 		if err != nil {
-			return nil, fmt.Errorf("allow prefix %q: %w", field, err)
+			return nil, fmt.Errorf("prefix %q: %w", field, err)
 		}
 		out = append(out, p.Masked())
 	}

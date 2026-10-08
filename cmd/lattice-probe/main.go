@@ -7,6 +7,8 @@
 //	LATTICE_PROBE_SOCKET          socket path (default /run/lattice-probe/probe.sock)
 //	LATTICE_PROBE_TARGETS_FILE    JSON {"targets":[...]} replacing the built-in targets
 //	LATTICE_PROBE_ALLOW_PREFIXES  comma-separated CIDRs exempt from the address policy (default none)
+//	LATTICE_PROBE_DENY_PREFIXES   comma-separated CIDRs always refused, such as the host's own public
+//	                              addresses; deny wins over allow (default none)
 package main
 
 import (
@@ -68,7 +70,11 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eng, err := engine.New(engine.Config{Targets: targets, Policy: &policy.Policy{Allow: allow}})
+	deny, err := policy.ParsePrefixes(os.Getenv("LATTICE_PROBE_DENY_PREFIXES"))
+	if err != nil {
+		return err
+	}
+	eng, err := engine.New(engine.Config{Targets: targets, Policy: &policy.Policy{Allow: allow, Deny: deny}})
 	if err != nil {
 		return err
 	}
@@ -88,6 +94,10 @@ func serve(log *slog.Logger) error {
 		MaxHeaderBytes: 16 << 10,
 		ErrorLog:       slog.NewLogLogger(log.Handler(), slog.LevelWarn),
 	}
+	denied := make([]string, len(deny))
+	for i, p := range deny {
+		denied[i] = p.String()
+	}
 	allowed := make([]string, len(allow))
 	for i, p := range allow {
 		allowed[i] = p.String()
@@ -99,6 +109,7 @@ func serve(log *slog.Logger) error {
 		slog.Int("targets", len(targets)),
 		slog.Int("max_inflight", spec.MaxInflight),
 		slog.String("allow_prefixes", strings.Join(allowed, ",")),
+		slog.String("deny_prefixes", strings.Join(denied, ",")),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
