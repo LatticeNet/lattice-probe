@@ -10,7 +10,7 @@ import (
 
 // Version is the probe's own version. Release builds set it with
 // -ldflags "-X github.com/LatticeNet/lattice-probe/internal/spec.Version=...".
-var Version = "0.1.0-alpha.1"
+var Version = "0.1.0-alpha.2"
 
 const (
 	EngineName = "sing-box"
