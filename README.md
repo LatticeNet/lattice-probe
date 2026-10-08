@@ -30,7 +30,7 @@ HTTP/1.1 on a unix socket, path from `LATTICE_PROBE_SOCKET` (default `/run/latti
 `GET /v1/health`
 
 ```json
-{"probe_version":"0.1.0","engine":"sing-box","core_version":"1.13.19","uptime_s":42,"inflight":0,"max_inflight":32,"targets":3}
+{"probe_version":"0.1.0-alpha.1","engine":"sing-box","core_version":"1.13.19","uptime_s":42,"inflight":0,"max_inflight":32,"targets":3}
 ```
 
 `GET /v1/targets`
