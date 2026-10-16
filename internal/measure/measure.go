@@ -69,6 +69,20 @@ func OneLine(err error) string {
 	return s
 }
 
+// TargetError is OneLine for a target's error, with any text the target
+// sent cut out. net/http quotes the bytes it could not parse ("malformed
+// HTTP response \"...\""), and a target's bytes are its body, which the
+// probe never returns.
+func TargetError(err error) string {
+	s := OneLine(err)
+	if strings.Contains(s, "malformed") {
+		if i := strings.IndexByte(s, '"'); i >= 0 {
+			s = strings.TrimSpace(s[:i]) + " (the bytes are not shown)"
+		}
+	}
+	return s
+}
+
 // IsTimeout reports whether err is a deadline rather than a refusal.
 func IsTimeout(err error) bool {
 	if errors.Is(err, context.DeadlineExceeded) {

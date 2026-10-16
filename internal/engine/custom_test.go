@@ -118,11 +118,11 @@ func TestCustomTargetResolutionHint(t *testing.T) {
 		deny     []netip.Prefix
 		want     string
 	}{
-		"private answer": {resolver: &fixedResolver{addrs: []netip.Addr{netip.MustParseAddr("10.0.0.7")}}, want: "private"},
+		"private answer": {resolver: &fixedResolver{addrs: []netip.Addr{netip.MustParseAddr("10.0.0.7")}}, want: "refuses"},
 		"one bad answer among good": {resolver: &fixedResolver{addrs: []netip.Addr{netip.MustParseAddr("8.8.4.4"), netip.MustParseAddr("192.168.1.9")}},
-			want: "private"},
+			want: "refuses"},
 		"denied answer": {resolver: &fixedResolver{addrs: []netip.Addr{netip.MustParseAddr("8.8.8.8")}}, deny: []netip.Prefix{netip.MustParsePrefix("8.8.8.0/24")},
-			want: "denied"},
+			want: "refuses"},
 		"no answer":    {resolver: &fixedResolver{}, want: "does not resolve"},
 		"lookup fails": {resolver: &fixedResolver{err: errors.New("no such host")}, want: "does not resolve"},
 	}
@@ -145,6 +145,11 @@ func TestCustomTargetResolutionHint(t *testing.T) {
 			if errors.As(err, &re) && (!contains(re.Message, c.want) || !contains(re.Message, "custom-edge")) {
 				t.Errorf("message %q, want it to name custom-edge and %q", re.Message, c.want)
 			}
+			for _, a := range c.resolver.addrs {
+				if re != nil && contains(re.Message, a.String()) {
+					t.Errorf("message %q reveals the resolver's answer %s", re.Message, a)
+				}
+			}
 			if c.resolver.calls.Load() == 0 {
 				t.Error("the resolver was not consulted")
 			}
@@ -155,5 +160,21 @@ func TestCustomTargetResolutionHint(t *testing.T) {
 				t.Errorf("%d outbounds left after a refusal", n)
 			}
 		})
+	}
+}
+
+// TestCustomTargetHostsResolvedOnce: two targets on one name cost one lookup.
+func TestCustomTargetHostsResolvedOnce(t *testing.T) {
+	l := sharedLab(t)
+	resolver := &fixedResolver{}
+	e := newEngine(t, l, func(cfg *Config) { cfg.Resolver = resolver })
+	req := customRequest(l,
+		spec.CustomTarget{ID: "custom-a", URL: "https://edge.example.net/a", Method: "GET", ExpectStatus: "204"},
+		spec.CustomTarget{ID: "custom-b", URL: "https://edge.example.net/b", Method: "GET", ExpectStatus: "204"},
+	)
+	_, err := e.Run(context.Background(), req)
+	assertRefused(t, err, spec.StagePolicy)
+	if n := resolver.calls.Load(); n != 1 {
+		t.Errorf("%d lookups for one name", n)
 	}
 }

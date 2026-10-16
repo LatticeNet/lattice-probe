@@ -13,6 +13,7 @@ import (
 	"net"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -291,26 +292,52 @@ func (e *Engine) checkServers(ctx context.Context, plan *policy.Plan) error {
 
 // checkTargetHosts resolves the host name of every custom target on the
 // probe and refuses the request when any address it gives is refused, or
-// when it does not resolve. It runs before anything is created. The proxy
-// resolves the name again at the far end and may get another answer, so
-// this is a hint against names that point into a local network, not a
-// guarantee; policy.CheckCustomTarget's rules are what always holds.
+// when it does not resolve. It runs before anything is created, with the
+// distinct names looked up side by side under one guardResolveTimeout, so
+// sixteen silent names cost five seconds, not eighty. The proxy resolves
+// each name again at the far end and may get another answer, so this is a
+// hint against names that point into a local network, not a guarantee;
+// policy.CheckCustomTarget's rules are what always holds. A refusal names
+// the target and the class of the problem, never an address the probe's
+// resolver returned, so it cannot be used to read that resolver's answers.
 func (e *Engine) checkTargetHosts(ctx context.Context, plan *policy.Plan) error {
+	firstID := map[string]string{}
+	var hosts []string
 	for _, t := range plan.Targets {
 		if !t.Custom || t.Host == "" {
 			continue
 		}
-		rctx, cancel := context.WithTimeout(ctx, guardResolveTimeout)
-		addrs, err := e.cfg.Resolver.LookupNetIP(rctx, "ip", t.Host)
-		cancel()
-		if err != nil || len(addrs) == 0 {
-			return spec.Refuse(fmt.Sprintf("custom target %s: %s does not resolve from the probe, so it cannot be checked", t.ID, t.Host))
+		if _, seen := firstID[t.Host]; !seen {
+			firstID[t.Host] = t.ID
+			hosts = append(hosts, t.Host)
 		}
-		for _, a := range addrs {
-			if r := e.cfg.Policy.Check(a); r != nil {
-				r.Host = t.Host
-				return spec.Refuse(fmt.Sprintf("custom target %s: %s", t.ID, r.Error()))
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, guardResolveTimeout)
+	defer cancel()
+	problems := make([]string, len(hosts))
+	var wg sync.WaitGroup
+	for i, host := range hosts {
+		wg.Go(func() {
+			addrs, err := e.cfg.Resolver.LookupNetIP(ctx, "ip", host)
+			if err != nil || len(addrs) == 0 {
+				problems[i] = "does not resolve from the probe, so it cannot be checked"
+				return
 			}
+			for _, a := range addrs {
+				if e.cfg.Policy.Check(a) != nil {
+					problems[i] = "resolves on the probe to an address the probe refuses (not global unicast, or in its deny prefixes)"
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	for i, problem := range problems {
+		if problem != "" {
+			return spec.Refuse(fmt.Sprintf("custom target %s: %s %s", firstID[hosts[i]], hosts[i], problem))
 		}
 	}
 	return nil

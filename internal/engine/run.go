@@ -200,7 +200,7 @@ func (r *run) sampleTargets(ctx context.Context) targetOutcome {
 				}
 				continue
 			}
-			msg := measure.OneLine(s.Err)
+			msg := measure.TargetError(s.Err)
 			if tr.Error == "" {
 				tr.Error = msg
 			}

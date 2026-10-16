@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,8 +42,10 @@ type Sample struct {
 	Status   int           // status of the cold request, 0 when no response arrived
 	Err      error
 	TimedOut bool
-	// BodyRead is true when the check has a needle and the cold body was
-	// read; BodyFound says whether the needle was in it, whatever the status.
+	// BodyRead is true when the check has a needle and the cold request
+	// answered with an expected status; BodyFound says whether the needle
+	// was in its body. A body under any other status is not searched, so
+	// an error page cannot be read one needle at a time.
 	BodyRead  bool
 	BodyFound bool
 }
@@ -92,12 +95,12 @@ func HTTPSample(ctx context.Context, d N.Dialer, chk Check, opt Options) Sample 
 		return s
 	}
 	s.Cold = firstByte - time.Duration(dialStart.Load())
-	if chk.BodyContains != "" {
-		s.BodyRead, s.BodyFound = true, found
-	}
 	if !chk.Expect.Contains(status) {
 		s.Err = fmt.Errorf("unexpected status %d (want %s)", status, chk.Expect)
 		return s
+	}
+	if chk.BodyContains != "" {
+		s.BodyRead, s.BodyFound = true, found
 	}
 	if !passes(status, found) {
 		s.Err = fmt.Errorf("status %d, but the first %d KiB of the body did not contain the expected text", status, spec.BodyMatchWindow>>10)
@@ -112,6 +115,13 @@ func HTTPSample(ctx context.Context, d N.Dialer, chk Check, opt Options) Sample 
 	return s
 }
 
+// bodyWindows recycles the buffers needles are searched in: a run may read
+// sixteen targets ten times over, twice per sample.
+var bodyWindows = sync.Pool{New: func() any {
+	b := make([]byte, spec.BodyMatchWindow)
+	return &b
+}}
+
 // readBody drains a response body up to maxBody and reports whether needle
 // appears in its first spec.BodyMatchWindow bytes. Nothing read is kept.
 func readBody(body io.Reader, needle string) (bool, error) {
@@ -119,7 +129,9 @@ func readBody(body io.Reader, needle string) (bool, error) {
 		_, err := io.Copy(io.Discard, io.LimitReader(body, maxBody))
 		return false, err
 	}
-	head := make([]byte, spec.BodyMatchWindow)
+	buf := bodyWindows.Get().(*[]byte)
+	defer bodyWindows.Put(buf)
+	head := *buf
 	n, err := io.ReadFull(body, head)
 	if err == io.EOF || err == io.ErrUnexpectedEOF {
 		return bytes.Contains(head[:n], []byte(needle)), nil

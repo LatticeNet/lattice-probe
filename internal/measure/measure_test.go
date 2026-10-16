@@ -71,3 +71,13 @@ func TestReadBodyWindow(t *testing.T) {
 		}
 	}
 }
+
+func TestTargetErrorHidesTargetBytes(t *testing.T) {
+	err := errors.New(`net/http: HTTP/1.x transport connection broken: malformed HTTP response "secret-body-bytes"`)
+	if got := TargetError(err); strings.Contains(got, "secret") || !strings.Contains(got, "malformed HTTP response") {
+		t.Errorf("%q", got)
+	}
+	if got := TargetError(errors.New(`unexpected status 403 (want 200)`)); got != "unexpected status 403 (want 200)" {
+		t.Errorf("%q", got)
+	}
+}

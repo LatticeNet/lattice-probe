@@ -5,7 +5,7 @@
 ### Added
 
 - `custom_targets` on `POST /v1/probe`: definitions of targets the operator saved in lattice-server (id, url, method GET or HEAD, `expect_status` as statuses and ranges, optional `body_contains`), measured where `targets` names their ids. The probe checks every definition before use: https only, the scheme's port or one from 1024 to 65535, no credentials or fragments, address literals through the same address policy as servers (deny prefixes, mapped and NAT64 forms included), fully qualified host names that are not local-only or numeric, a 2 KiB URL cap, and a resolution hint on the probe that refuses names resolving to refused addresses. Requests that carry ids only behave as before.
-- `body_match` on a target result with a `body_contains` needle: whether any sample's body held it in its first 64 KiB. The body itself is never returned.
+- `body_match` on a target result with a `body_contains` needle: whether any sample that answered with an expected status held it in the first 64 KiB of its body. The body itself is never returned, and errors that would quote a target's bytes ("malformed HTTP response") have them cut out.
 - `capabilities` in `GET /v1/health`, listing `custom_targets`, so a server knows before it sends any.
 - `LATTICE_PROBE_ALLOW_HTTP_TARGETS` permits http:// custom targets for a lab; off by default.
 
