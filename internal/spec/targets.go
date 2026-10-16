@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"strings"
 )
 
 // Target is a URL a probe may fetch through the tested outbound. Requests
@@ -59,8 +60,9 @@ func LoadTargets(path string) ([]Target, error) {
 }
 
 // ValidateTargets enforces the rules for an operator-supplied list: ids
-// match ^[a-z0-9-]{1,40}$ and are unique, URLs are https with a host and no
-// credentials, and the expected status is a real HTTP status.
+// match ^[a-z0-9-]{1,40}$, are unique and do not start with
+// CustomTargetPrefix, URLs are https with a host and no credentials, and the
+// expected status is a real HTTP status.
 func ValidateTargets(targets []Target) error {
 	if len(targets) == 0 {
 		return fmt.Errorf("the list is empty")
@@ -72,6 +74,9 @@ func ValidateTargets(targets []Target) error {
 	for i, t := range targets {
 		if !targetID.MatchString(t.ID) {
 			return fmt.Errorf("targets[%d]: id %q does not match ^[a-z0-9-]{1,40}$", i, t.ID)
+		}
+		if strings.HasPrefix(t.ID, CustomTargetPrefix) {
+			return fmt.Errorf("targets[%d]: id %q starts with %q, which is reserved for custom targets", i, t.ID, CustomTargetPrefix)
 		}
 		if seen[t.ID] {
 			return fmt.Errorf("targets[%d]: duplicate id %q", i, t.ID)

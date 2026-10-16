@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/LatticeNet/lattice-probe/internal/spec"
 )
 
 func TestSummarize(t *testing.T) {
@@ -44,5 +46,38 @@ func TestOneLine(t *testing.T) {
 	long := OneLine(fmt.Errorf("%s", strings.Repeat("x", 500)))
 	if len(long) != 303 {
 		t.Errorf("long error is %d bytes", len(long))
+	}
+}
+
+func TestReadBodyWindow(t *testing.T) {
+	window := spec.BodyMatchWindow
+	cases := map[string]struct {
+		body   string
+		needle string
+		found  bool
+	}{
+		"short body":          {"ok\n", "ok", true},
+		"absent":              {"ok\n", "Success", false},
+		"no needle":           {strings.Repeat("x", 3*maxBody), "", false},
+		"at the window end":   {strings.Repeat("x", window-7) + "needle!", "needle!", true},
+		"across the window":   {strings.Repeat("x", window-3) + "needle", "needle", false},
+		"past the window":     {strings.Repeat("x", window) + "needle", "needle", false},
+		"longer than the cap": {"needle" + strings.Repeat("x", 2*maxBody), "needle", true},
+	}
+	for name, c := range cases {
+		found, err := readBody(strings.NewReader(c.body), c.needle)
+		if err != nil || found != c.found {
+			t.Errorf("%s: found %v err %v, want %v", name, found, err, c.found)
+		}
+	}
+}
+
+func TestTargetErrorHidesTargetBytes(t *testing.T) {
+	err := errors.New(`net/http: HTTP/1.x transport connection broken: malformed HTTP response "secret-body-bytes"`)
+	if got := TargetError(err); strings.Contains(got, "secret") || !strings.Contains(got, "malformed HTTP response") {
+		t.Errorf("%q", got)
+	}
+	if got := TargetError(errors.New(`unexpected status 403 (want 200)`)); got != "unexpected status 403 (want 200)" {
+		t.Errorf("%q", got)
 	}
 }

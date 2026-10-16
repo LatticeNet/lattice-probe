@@ -33,6 +33,25 @@ const (
 	MaxThroughputBytes     = 25_000_000
 
 	SampleTimeout = 5 * time.Second
+
+	// MaxTargetsPerRun bounds the targets one request measures, built-in
+	// and custom together.
+	MaxTargetsPerRun = 16
+	// MaxCustomURLBytes bounds a custom target's URL.
+	MaxCustomURLBytes = 2048
+	// MaxBodyContainsBytes bounds a custom target's body needle.
+	MaxBodyContainsBytes = 256
+	// BodyMatchWindow is how much of a response body is searched for a
+	// custom target's needle. The body itself is never returned.
+	BodyMatchWindow = 64 << 10
+	// CustomTargetPrefix starts every custom target id. A targets file may
+	// not use it, so a custom id can never name a configured target.
+	CustomTargetPrefix = "custom-"
+
+	// CapabilityCustomTargets in Health.Capabilities says this probe
+	// accepts Request.CustomTargets. A server checks it before sending
+	// any, because an older probe ignores the field and refuses the ids.
+	CapabilityCustomTargets = "custom_targets"
 )
 
 // Stage names where a probe stopped. The first group appears in a 200
@@ -61,11 +80,24 @@ type Request struct {
 	Outbounds       []json.RawMessage `json:"outbounds"`
 	Test            string            `json:"test"`
 	Targets         []string          `json:"targets"`
+	CustomTargets   []CustomTarget    `json:"custom_targets,omitempty"`
 	Samples         int               `json:"samples"`
 	UDP             bool              `json:"udp"`
 	Throughput      bool              `json:"throughput"`
 	ThroughputBytes int64             `json:"throughput_bytes"`
 	TimeoutMS       int               `json:"timeout_ms"`
+}
+
+// CustomTarget is a target the operator saved in lattice-server. The server
+// sends the definition of each saved target a request names in targets; the
+// probe checks it again before use (policy.Parse), because a definition is
+// a URL the probe would otherwise fetch on a caller's word.
+type CustomTarget struct {
+	ID           string `json:"id"`
+	URL          string `json:"url"`
+	Method       string `json:"method"`
+	ExpectStatus string `json:"expect_status"`
+	BodyContains string `json:"body_contains,omitempty"`
 }
 
 // Result is the answer to every completed probe, including one whose
@@ -111,6 +143,9 @@ type TargetResult struct {
 	WarmMS Dist   `json:"warm_ms"`
 	Status int    `json:"status"`
 	Error  string `json:"error"`
+	// BodyMatch is set for a target with a body needle once any response
+	// arrived: true when at least one sample's body held the needle.
+	BodyMatch *bool `json:"body_match,omitempty"`
 }
 
 type Exit struct {
@@ -145,6 +180,9 @@ type Health struct {
 	Inflight     int64  `json:"inflight"`
 	MaxInflight  int    `json:"max_inflight"`
 	Targets      int    `json:"targets"`
+	// Capabilities names optional features this probe supports, such as
+	// CapabilityCustomTargets.
+	Capabilities []string `json:"capabilities"`
 }
 
 // ErrorBody is the body of every non-200 answer.

@@ -147,6 +147,11 @@ func TestHealthAndTargets(t *testing.T) {
 	if health["engine"] != "sing-box" || health["max_inflight"] != float64(32) || health["targets"] != float64(3) {
 		t.Errorf("health %v", health)
 	}
+	// lattice-server sends custom targets only to a probe that says it
+	// takes them.
+	if caps, _ := health["capabilities"].([]any); len(caps) != 1 || caps[0] != spec.CapabilityCustomTargets {
+		t.Errorf("capabilities %v", health["capabilities"])
+	}
 
 	rec = httptest.NewRecorder()
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/v1/targets", nil))
@@ -156,6 +161,68 @@ func TestHealthAndTargets(t *testing.T) {
 	}
 	if len(list.Targets) != 3 || list.Targets[0].ID != "gstatic-204" || list.Targets[0].Expect != 204 {
 		t.Errorf("targets %+v", list.Targets)
+	}
+}
+
+// recordingProber keeps the request it was given.
+type recordingProber struct{ got *spec.Request }
+
+func (r *recordingProber) Run(_ context.Context, req *spec.Request) (*spec.Result, error) {
+	r.got = req
+	return &spec.Result{Stage: spec.StageOK, Targets: []spec.TargetResult{}}, nil
+}
+func (r *recordingProber) Targets() []spec.Target { return spec.DefaultTargets() }
+func (r *recordingProber) CoreVersion() string    { return "1.13.19" }
+
+// TestCustomTargetsWire pins the field names lattice-server writes.
+func TestCustomTargetsWire(t *testing.T) {
+	p := &recordingProber{}
+	h := New(p, slog.New(slog.NewJSONHandler(io.Discard, nil))).Handler()
+	body := `{"outbounds":[{"type":"shadowsocks","tag":"a","server":"1.1.1.1","server_port":1}],"targets":["custom-edge"],` +
+		`"custom_targets":[{"id":"custom-edge","url":"https://edge.example.net/","method":"HEAD","expect_status":"200-299,301","body_contains":"x"}]}`
+	if rec := post(t, h, body); rec.Code != http.StatusOK {
+		t.Fatalf("answered %d: %s", rec.Code, rec.Body)
+	}
+	want := spec.CustomTarget{ID: "custom-edge", URL: "https://edge.example.net/", Method: "HEAD", ExpectStatus: "200-299,301", BodyContains: "x"}
+	if p.got == nil || len(p.got.CustomTargets) != 1 || p.got.CustomTargets[0] != want {
+		t.Errorf("decoded %+v", p.got)
+	}
+	matched := true
+	out, _ := json.Marshal(spec.TargetResult{ID: "custom-edge", BodyMatch: &matched})
+	if !strings.Contains(string(out), `"body_match":true`) {
+		t.Errorf("target result %s", out)
+	}
+	if out, _ := json.Marshal(spec.TargetResult{ID: "gstatic-204"}); strings.Contains(string(out), "body_match") {
+		t.Errorf("a target without a needle carries body_match: %s", out)
+	}
+}
+
+// TestFoldedFieldNamesRefused: a key encoding/json would fold onto a field
+// is refused, so the probe never acts on a field its caller did not write
+// exactly. Unknown fields stay ignored.
+func TestFoldedFieldNamesRefused(t *testing.T) {
+	p := &recordingProber{}
+	h := New(p, slog.New(slog.NewJSONHandler(io.Discard, nil))).Handler()
+	ob := `"outbounds":[{"type":"shadowsocks","tag":"a","server":"1.1.1.1","server_port":1}]`
+	for name, body := range map[string]string{
+		"title case": `{` + ob + `,"Custom_Targets":[]}`,
+		"long s":     `{` + ob + `,"cuſtom_targets":[]}`,
+		"targets":    `{` + ob + `,"TARGETS":["gstatic-204"]}`,
+		"outbounds":  `{"Outbounds":[]}`,
+	} {
+		rec := post(t, h, body)
+		if rec.Code != http.StatusBadRequest || decodeError(t, rec).Stage != spec.StageRequest || !strings.Contains(decodeError(t, rec).Message, "letter case") {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if p.got != nil {
+		t.Errorf("a refused request reached the engine: %+v", p.got)
+	}
+	if rec := post(t, h, `{`+ob+`,"note":"x"}`); rec.Code != http.StatusOK {
+		t.Errorf("an unknown field was refused: %d %s", rec.Code, rec.Body)
+	}
+	if len(requestFields) < 9 || requestFields[0] != "engine" {
+		t.Errorf("request fields %v", requestFields)
 	}
 }
 

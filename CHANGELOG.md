@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `custom_targets` on `POST /v1/probe`: definitions of targets the operator saved in lattice-server (id, url, method GET or HEAD, `expect_status` as statuses and ranges, optional `body_contains`), measured where `targets` names their ids. The probe checks every definition before use: https only, the scheme's port or one from 1024 to 65535, no credentials or fragments, address literals through the same address policy as servers (deny prefixes, mapped and NAT64 forms included), fully qualified host names that are not local-only or numeric, a 2 KiB URL cap, and a resolution hint on the probe that refuses names resolving to refused addresses. Requests that carry ids only behave as before.
+- `body_match` on a target result with a `body_contains` needle: whether any sample that answered with an expected status held it in the first 64 KiB of its body. The body itself is never returned, and errors that would quote a target's bytes ("malformed HTTP response") have them cut out.
+- `capabilities` in `GET /v1/health`, listing `custom_targets`, so a server knows before it sends any.
+- `LATTICE_PROBE_ALLOW_HTTP_TARGETS` permits http:// custom targets for a lab; off by default.
+
+### Changed
+
+- Target ids in `LATTICE_PROBE_TARGETS_FILE` may no longer start with `custom-`, which is reserved for custom targets so the two lists can never share an id.
+- A request measures at most 16 targets, built-in and custom together.
+- A top-level request field written in another letter case, or with a character Unicode folds onto one of its letters (`Custom_Targets`, `cuſtom_targets`), is refused as malformed instead of being decoded into that field, so the probe never acts on a field its caller did not write exactly.
+
 ## 0.1.0-alpha.2 (2026-10-08)
 
 ### Added

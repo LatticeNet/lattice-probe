@@ -9,6 +9,9 @@
 //	LATTICE_PROBE_ALLOW_PREFIXES  comma-separated CIDRs exempt from the address policy (default none)
 //	LATTICE_PROBE_DENY_PREFIXES   comma-separated CIDRs always refused, such as the host's own public
 //	                              addresses; deny wins over allow (default none)
+//	LATTICE_PROBE_ALLOW_HTTP_TARGETS
+//	                              true permits http:// custom targets, for a lab; leave it unset in
+//	                              production, where custom targets are https only (default false)
 package main
 
 import (
@@ -20,6 +23,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -74,7 +78,13 @@ func serve(log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
-	eng, err := engine.New(engine.Config{Targets: targets, Policy: &policy.Policy{Allow: allow, Deny: deny}})
+	allowHTTP := false
+	if v := os.Getenv("LATTICE_PROBE_ALLOW_HTTP_TARGETS"); v != "" {
+		if allowHTTP, err = strconv.ParseBool(v); err != nil {
+			return fmt.Errorf("LATTICE_PROBE_ALLOW_HTTP_TARGETS: %w", err)
+		}
+	}
+	eng, err := engine.New(engine.Config{Targets: targets, Policy: &policy.Policy{Allow: allow, Deny: deny}, AllowHTTPTargets: allowHTTP})
 	if err != nil {
 		return err
 	}
@@ -110,6 +120,7 @@ func serve(log *slog.Logger) error {
 		slog.Int("max_inflight", spec.MaxInflight),
 		slog.String("allow_prefixes", strings.Join(allowed, ",")),
 		slog.String("deny_prefixes", strings.Join(denied, ",")),
+		slog.Bool("allow_http_targets", allowHTTP),
 	)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)

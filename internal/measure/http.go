@@ -2,6 +2,7 @@ package measure
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptrace"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -21,25 +23,41 @@ import (
 // is cut and the connection is not reused.
 const maxBody = 1 << 20
 
+// Check is what one target asks of its answer.
+type Check struct {
+	URL    string
+	Method string // GET or HEAD
+	Expect spec.StatusSet
+	// BodyContains, when set, must appear in the first spec.BodyMatchWindow
+	// bytes of the body. Only whether it did is kept.
+	BodyContains string
+}
+
 // Sample is one cold request on a new proxied connection and one warm
 // request on the same connection.
 type Sample struct {
 	Cold     time.Duration // dial start to first response byte
 	Warm     time.Duration // second request start to first response byte
-	WarmOK   bool          // the warm request reused the connection and got the expected status
+	WarmOK   bool          // the warm request reused the connection and passed the check
 	Status   int           // status of the cold request, 0 when no response arrived
 	Err      error
 	TimedOut bool
+	// BodyRead is true when the check has a needle and the cold request
+	// answered with an expected status; BodyFound says whether the needle
+	// was in its body. A body under any other status is not searched, so
+	// an error page cannot be read one needle at a time.
+	BodyRead  bool
+	BodyFound bool
 }
 
-// OK reports whether the cold request answered with the expected status.
-func (s Sample) OK(expect int) bool { return s.Err == nil && s.Status == expect }
+// OK reports whether the cold request passed the check.
+func (s Sample) OK() bool { return s.Err == nil && s.Status != 0 }
 
-// HTTPSample fetches target twice through d: once on a new proxied
+// HTTPSample fetches the target twice through d: once on a new proxied
 // connection (cold, timed with httptrace from the start of the dial to the
 // first response byte, so it includes the proxy handshake) and once more on
 // the same connection (warm). ctx bounds the whole sample.
-func HTTPSample(ctx context.Context, d N.Dialer, target string, expect int, opt Options) Sample {
+func HTTPSample(ctx context.Context, d N.Dialer, chk Check, opt Options) Sample {
 	var s Sample
 	var dialStart atomic.Int64
 	base := time.Now()
@@ -47,44 +65,83 @@ func HTTPSample(ctx context.Context, d N.Dialer, target string, expect int, opt 
 	defer tr.CloseIdleConnections()
 	c := client(tr)
 
-	get := func() (status int, firstByte time.Duration, reused bool, err error) {
+	get := func() (status int, firstByte time.Duration, reused, found bool, err error) {
 		var first atomic.Int64
 		var wasReused atomic.Bool
 		trace := &httptrace.ClientTrace{
 			GotConn:              func(i httptrace.GotConnInfo) { wasReused.Store(i.Reused) },
 			GotFirstResponseByte: func() { first.CompareAndSwap(0, int64(time.Since(base))) },
 		}
-		req, err := newRequest(httptrace.WithClientTrace(ctx, trace), target, opt)
+		req, err := newRequest(httptrace.WithClientTrace(ctx, trace), chk.Method, chk.URL, opt)
 		if err != nil {
-			return 0, 0, false, err
+			return 0, 0, false, false, err
 		}
 		resp, err := c.Do(req)
 		if err != nil {
-			return 0, 0, false, err
+			return 0, 0, false, false, err
 		}
-		_, err = io.Copy(io.Discard, io.LimitReader(resp.Body, maxBody))
+		found, err = readBody(resp.Body, chk.BodyContains)
 		resp.Body.Close()
-		return resp.StatusCode, time.Duration(first.Load()), wasReused.Load(), err
+		return resp.StatusCode, time.Duration(first.Load()), wasReused.Load(), found, err
+	}
+	passes := func(status int, found bool) bool {
+		return chk.Expect.Contains(status) && (chk.BodyContains == "" || found)
 	}
 
-	status, firstByte, _, err := get()
+	status, firstByte, _, found, err := get()
 	s.Status = status
 	if err != nil {
 		s.Err, s.TimedOut = err, IsTimeout(err) || ctx.Err() != nil
 		return s
 	}
 	s.Cold = firstByte - time.Duration(dialStart.Load())
-	if status != expect {
-		s.Err = fmt.Errorf("unexpected status %d (want %d)", status, expect)
+	if !chk.Expect.Contains(status) {
+		s.Err = fmt.Errorf("unexpected status %d (want %s)", status, chk.Expect)
+		return s
+	}
+	if chk.BodyContains != "" {
+		s.BodyRead, s.BodyFound = true, found
+	}
+	if !passes(status, found) {
+		s.Err = fmt.Errorf("status %d, but the first %d KiB of the body did not contain the expected text", status, spec.BodyMatchWindow>>10)
 		return s
 	}
 	warmStart := time.Since(base)
-	status, firstByte, reused, err := get()
-	if err == nil && reused && status == expect {
+	status, firstByte, reused, found, err := get()
+	if err == nil && reused && passes(status, found) {
 		s.Warm = firstByte - warmStart
 		s.WarmOK = true
 	}
 	return s
+}
+
+// bodyWindows recycles the buffers needles are searched in: a run may read
+// sixteen targets ten times over, twice per sample.
+var bodyWindows = sync.Pool{New: func() any {
+	b := make([]byte, spec.BodyMatchWindow)
+	return &b
+}}
+
+// readBody drains a response body up to maxBody and reports whether needle
+// appears in its first spec.BodyMatchWindow bytes. Nothing read is kept.
+func readBody(body io.Reader, needle string) (bool, error) {
+	if needle == "" {
+		_, err := io.Copy(io.Discard, io.LimitReader(body, maxBody))
+		return false, err
+	}
+	buf := bodyWindows.Get().(*[]byte)
+	defer bodyWindows.Put(buf)
+	head := *buf
+	n, err := io.ReadFull(body, head)
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return bytes.Contains(head[:n], []byte(needle)), nil
+	}
+	if err != nil {
+		return false, err
+	}
+	found := bytes.Contains(head[:n], []byte(needle))
+	_, err = io.Copy(io.Discard, io.LimitReader(body, maxBody-int64(n)))
+	return found, err
 }
 
 // Exit fetches a Cloudflare-style trace through d and returns the exit
@@ -92,7 +149,7 @@ func HTTPSample(ctx context.Context, d N.Dialer, target string, expect int, opt 
 func Exit(ctx context.Context, d N.Dialer, traceURL string, opt Options) (*spec.Exit, error) {
 	tr := transport(d, opt, nil)
 	defer tr.CloseIdleConnections()
-	req, err := newRequest(ctx, traceURL, opt)
+	req, err := newRequest(ctx, http.MethodGet, traceURL, opt)
 	if err != nil {
 		return nil, err
 	}
@@ -137,7 +194,7 @@ func Download(ctx context.Context, d N.Dialer, url string, opt Options) (*spec.T
 	trace := &httptrace.ClientTrace{
 		GotFirstResponseByte: func() { first.CompareAndSwap(0, int64(time.Since(base))) },
 	}
-	req, err := newRequest(httptrace.WithClientTrace(ctx, trace), url, opt)
+	req, err := newRequest(httptrace.WithClientTrace(ctx, trace), http.MethodGet, url, opt)
 	if err != nil {
 		return nil, err
 	}

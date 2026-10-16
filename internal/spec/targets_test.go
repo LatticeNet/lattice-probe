@@ -37,6 +37,7 @@ func TestLoadTargets(t *testing.T) {
 		"unknown field": `{"targets":[],"extra":1}`,
 		"not json":      `targets`,
 		"no host":       `{"targets":[{"id":"a","url":"https:///x","expect":204}]}`,
+		"custom prefix": `{"targets":[{"id":"custom-edge","url":"https://example.net/","expect":204}]}`,
 	}
 	for name, body := range bad {
 		if _, err := LoadTargets(write(body)); err == nil {

@@ -68,7 +68,7 @@ type Plan struct {
 	Order           []int // creation order: every outbound after its detour
 	Test            int   // index of the outbound to measure
 	Root            int   // index of the first hop of Test's chain
-	Targets         []spec.Target
+	Targets         []Target
 	Samples         int
 	UDP             bool
 	Throughput      bool
@@ -87,8 +87,9 @@ func (p *Plan) Types() []string {
 }
 
 // Parse validates a request against the shape and policy rules that need
-// no network and returns the plan. Errors are *spec.RequestError.
-func Parse(req *spec.Request, targets []spec.Target) (*Plan, error) {
+// no network and returns the plan. targets is the configured list; rules
+// govern the request's custom targets. Errors are *spec.RequestError.
+func Parse(req *spec.Request, targets []spec.Target, rules TargetRules) (*Plan, error) {
 	if req.Engine != "" && req.Engine != spec.EngineName {
 		return nil, spec.Refuse(fmt.Sprintf("engine %q is not available; this probe runs %s", req.Engine, spec.EngineName))
 	}
@@ -146,7 +147,7 @@ func Parse(req *spec.Request, targets []spec.Target) (*Plan, error) {
 		p.Root = byTag[p.Outbounds[p.Root].Detour]
 	}
 
-	if p.Targets, err = pickTargets(req.Targets, targets); err != nil {
+	if p.Targets, err = pickTargets(req, targets, rules); err != nil {
 		return nil, err
 	}
 	switch {
@@ -384,32 +385,6 @@ func creationOrder(obs []Outbound, byTag map[string]int) ([]int, error) {
 		}
 	}
 	return order, nil
-}
-
-func pickTargets(ids []string, targets []spec.Target) ([]spec.Target, error) {
-	if len(targets) == 0 {
-		return nil, spec.Refuse("no targets are configured")
-	}
-	if len(ids) == 0 {
-		return targets[:1], nil
-	}
-	byID := make(map[string]spec.Target, len(targets))
-	for _, t := range targets {
-		byID[t.ID] = t
-	}
-	out := make([]spec.Target, 0, len(ids))
-	seen := make(map[string]bool, len(ids))
-	for _, id := range ids {
-		t, ok := byID[id]
-		if !ok {
-			return nil, spec.Refuse(fmt.Sprintf("target %q is not in the configured list; GET /v1/targets lists the ids", safeName(id)))
-		}
-		if !seen[id] {
-			seen[id] = true
-			out = append(out, t)
-		}
-	}
-	return out, nil
 }
 
 func allowedList() string {

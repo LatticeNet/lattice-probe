@@ -13,6 +13,7 @@ import (
 	"net"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -41,6 +42,8 @@ type Config struct {
 	Targets  []spec.Target
 	Policy   *policy.Policy
 	Resolver policy.Resolver
+	// AllowHTTPTargets permits http:// custom targets, for a lab only.
+	AllowHTTPTargets bool
 
 	TraceURL      string // exit check, default https://www.cloudflare.com/cdn-cgi/trace
 	DNSServer     string // UDP check, default 1.1.1.1:53
@@ -151,8 +154,11 @@ func coreVersion() string {
 // outbound did wrong is reported inside the Result.
 func (e *Engine) Run(ctx context.Context, req *spec.Request) (*spec.Result, error) {
 	began := time.Now()
-	plan, err := policy.Parse(req, e.cfg.Targets)
+	plan, err := policy.Parse(req, e.cfg.Targets, policy.TargetRules{Policy: e.cfg.Policy, AllowHTTP: e.cfg.AllowHTTPTargets})
 	if err != nil {
+		return nil, err
+	}
+	if err := e.checkTargetHosts(ctx, plan); err != nil {
 		return nil, err
 	}
 	res := &spec.Result{Targets: []spec.TargetResult{}, Engine: e.info(), Types: plan.Types()}
@@ -279,6 +285,59 @@ func (e *Engine) checkServers(ctx context.Context, plan *policy.Plan) error {
 				r.Host = ob.Host
 				return r
 			}
+		}
+	}
+	return nil
+}
+
+// checkTargetHosts resolves the host name of every custom target on the
+// probe and refuses the request when any address it gives is refused, or
+// when it does not resolve. It runs before anything is created, with the
+// distinct names looked up side by side under one guardResolveTimeout, so
+// sixteen silent names cost five seconds, not eighty. The proxy resolves
+// each name again at the far end and may get another answer, so this is a
+// hint against names that point into a local network, not a guarantee;
+// policy.CheckCustomTarget's rules are what always holds. A refusal names
+// the target and the class of the problem, never an address the probe's
+// resolver returned, so it cannot be used to read that resolver's answers.
+func (e *Engine) checkTargetHosts(ctx context.Context, plan *policy.Plan) error {
+	firstID := map[string]string{}
+	var hosts []string
+	for _, t := range plan.Targets {
+		if !t.Custom || t.Host == "" {
+			continue
+		}
+		if _, seen := firstID[t.Host]; !seen {
+			firstID[t.Host] = t.ID
+			hosts = append(hosts, t.Host)
+		}
+	}
+	if len(hosts) == 0 {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctx, guardResolveTimeout)
+	defer cancel()
+	problems := make([]string, len(hosts))
+	var wg sync.WaitGroup
+	for i, host := range hosts {
+		wg.Go(func() {
+			addrs, err := e.cfg.Resolver.LookupNetIP(ctx, "ip", host)
+			if err != nil || len(addrs) == 0 {
+				problems[i] = "does not resolve from the probe, so it cannot be checked"
+				return
+			}
+			for _, a := range addrs {
+				if e.cfg.Policy.Check(a) != nil {
+					problems[i] = "resolves on the probe to an address the probe refuses (not global unicast, or in its deny prefixes)"
+					return
+				}
+			}
+		})
+	}
+	wg.Wait()
+	for i, problem := range problems {
+		if problem != "" {
+			return spec.Refuse(fmt.Sprintf("custom target %s: %s %s", firstID[hosts[i]], hosts[i], problem))
 		}
 	}
 	return nil

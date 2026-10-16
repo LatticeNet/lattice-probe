@@ -162,7 +162,7 @@ func TestParseDefaultsAndChains(t *testing.T) {
 		json.RawMessage(`{"type":"shadowsocks","tag":"mid","server":"8.8.8.8","server_port":8388,"detour":"first"}`),
 		json.RawMessage(`{"type":"hysteria2","tag":"first","server":"example.com","server_ports":["20000:30000"]}`),
 	}, Test: "exit"}
-	p, err := Parse(req, targets)
+	p, err := Parse(req, targets, TargetRules{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -187,7 +187,7 @@ func TestParseRefusesFilePaths(t *testing.T) {
 		`{"type":"vless","tag":"a","server":"1.1.1.1","server_port":1,"tls":{"ech":{"config_path":"/x"}}}`,
 		`{"type":"trojan","tag":"a","server":"1.1.1.1","server_port":1,"tls":{"certificate_path":["/a"]}}`,
 	} {
-		_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets())
+		_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets(), TargetRules{})
 		var re *spec.RequestError
 		if !errors.As(err, &re) || re.Stage != spec.StagePolicy || !strings.Contains(re.Message, "_path") {
 			t.Errorf("%s: %v", ob, err)
@@ -195,7 +195,7 @@ func TestParseRefusesFilePaths(t *testing.T) {
 	}
 	// A boolean that happens to end in _path is not a file.
 	ok := `{"type":"vless","tag":"a","server":"1.1.1.1","server_port":1,"tcp_multi_path":true}`
-	if _, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ok)}}, spec.DefaultTargets()); err != nil {
+	if _, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ok)}}, spec.DefaultTargets(), TargetRules{}); err != nil {
 		t.Errorf("tcp_multi_path refused: %v", err)
 	}
 }
@@ -203,7 +203,7 @@ func TestParseRefusesFilePaths(t *testing.T) {
 func TestParseRefusesNonProxyTypes(t *testing.T) {
 	for _, typ := range []string{"direct", "block", "dns", "selector", "urltest", "tor", "wireguard", "lattice-guard", "naive"} {
 		ob := `{"type":"` + typ + `","tag":"a","server":"1.1.1.1","server_port":1}`
-		_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets())
+		_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets(), TargetRules{})
 		var re *spec.RequestError
 		if !errors.As(err, &re) || re.Stage != spec.StagePolicy {
 			t.Errorf("type %s: %v", typ, err)
@@ -224,7 +224,7 @@ func TestParseRefusesFoldedFieldNames(t *testing.T) {
 		"uppercase server":     `{"type":"socks","tag":"a","Server":"1.1.1.1","server":"8.8.8.8","server_port":1}`,
 		"uppercase detour":     `{"type":"socks","tag":"a","server":"8.8.8.8","server_port":1,"DETOUR":"b"}`,
 	} {
-		_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets())
+		_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets(), TargetRules{})
 		var re *spec.RequestError
 		if !errors.As(err, &re) || re.Stage != spec.StageRequest || !strings.Contains(re.Message, "field name") {
 			t.Errorf("%s: %v, want a request refusal naming the field", name, err)
@@ -232,7 +232,7 @@ func TestParseRefusesFoldedFieldNames(t *testing.T) {
 	}
 	// Header names are data, not option fields, and keep their case.
 	ok := `{"type":"vmess","tag":"a","server":"8.8.8.8","server_port":1,"uuid":"u","transport":{"type":"ws","headers":{"Host":"cdn.example"}}}`
-	if _, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ok)}}, spec.DefaultTargets()); err != nil {
+	if _, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ok)}}, spec.DefaultTargets(), TargetRules{}); err != nil {
 		t.Errorf("a mixed-case header name was refused: %v", err)
 	}
 }
@@ -241,7 +241,7 @@ func TestParseRefusesFoldedFieldNames(t *testing.T) {
 // certificate_path, so the file check must not depend on case either.
 func TestParseRefusesFoldedFilePaths(t *testing.T) {
 	ob := `{"type":"trojan","tag":"a","server":"1.1.1.1","server_port":1,"tls":{"enabled":true,"certificate_PATH":"/etc/passwd"}}`
-	_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets())
+	_, err := Parse(&spec.Request{Outbounds: []json.RawMessage{json.RawMessage(ob)}}, spec.DefaultTargets(), TargetRules{})
 	var re *spec.RequestError
 	if !errors.As(err, &re) || re.Stage != spec.StagePolicy || !strings.Contains(re.Message, "certificate_PATH") {
 		t.Errorf("%v, want a policy refusal of tls.certificate_PATH", err)
