@@ -109,8 +109,8 @@ func client(tr *http.Transport) *http.Client {
 	}
 }
 
-func newRequest(ctx context.Context, target string, opt Options) (*http.Request, error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+func newRequest(ctx context.Context, method, target string, opt Options) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, target, nil)
 	if err != nil {
 		return nil, err
 	}

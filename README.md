@@ -30,8 +30,11 @@ HTTP/1.1 on a unix socket, path from `LATTICE_PROBE_SOCKET` (default `/run/latti
 `GET /v1/health`
 
 ```json
-{"probe_version":"0.1.0-alpha.2","engine":"sing-box","core_version":"1.13.19","uptime_s":42,"inflight":0,"max_inflight":32,"targets":3}
+{"probe_version":"0.1.0-alpha.2","engine":"sing-box","core_version":"1.13.19","uptime_s":42,"inflight":0,"max_inflight":32,"targets":3,
+ "capabilities":["custom_targets"]}
 ```
+
+`capabilities` names optional features. A caller sends `custom_targets` only to a probe that lists `custom_targets` here: an older probe ignores the field and refuses the ids.
 
 `GET /v1/targets`
 
@@ -49,6 +52,16 @@ HTTP/1.1 on a unix socket, path from `LATTICE_PROBE_SOCKET` (default `/run/latti
 ```
 
 `outbounds` holds one outbound, or up to eight for a chain, where `detour` names another outbound of the same request. `test` names the one to measure and may be left out when there is only one. Missing `targets` means the first configured target; zero values mean the defaults above.
+
+`custom_targets` carries the definitions of targets the operator saved in lattice-server, one for each custom id `targets` names:
+
+```json
+"targets":["gstatic-204","custom-home-nas"],
+"custom_targets":[{"id":"custom-home-nas","url":"https://nas.example.net:8443/health","method":"GET",
+                   "expect_status":"200-299,301","body_contains":"ok"}]
+```
+
+The probe checks every definition again before it fetches anything (see Policy), whoever sent it. `expect_status` is a comma-separated list of statuses and ranges with no spaces. `body_contains`, when set, must appear in the first 64 KiB of the body; the answer says only whether it did (`"body_match":true` on the target), never what the body held. A request measures at most 16 targets, built-in and custom together.
 
 Every completed probe answers 200, including one whose outbound fails:
 
@@ -72,7 +85,7 @@ Every completed probe answers 200, including one whose outbound fails:
 | `create` | sing-box refused to create an outbound (`valid` is false) |
 | `server` | the first hop refused or ignored a plain connect, or its name does not resolve |
 | `handshake` | no sample got an HTTP answer: wrong credentials, a wrong transport, or a server that reaches no target. Most protocols cannot tell these apart; the server just closes the connection |
-| `target` | the proxy works, but a target never answered with its expected status |
+| `target` | the proxy works, but a target never answered with its expected status (or without its `body_contains` text) |
 | `timeout` | samples ran out of time without an answer |
 
 `exit`, `udp` and `throughput` are `null` when they were not measured. A malformed body or a policy refusal answers 400 with `{"error":{"stage":"request"|"policy","message":"..."}}`; a probe beyond 32 in flight answers 429 with `Retry-After`.
@@ -83,7 +96,9 @@ Checked before anything connects:
 
 - allowed types: shadowsocks, vmess, vless, trojan, hysteria, hysteria2, tuic, shadowtls, anytls, socks, http, ssh. direct, block, dns, selector, urltest and everything else are refused;
 - at most 8 outbounds, unique tags, `detour` only to a tag of the same request and without cycles;
-- target ids only from the configured list; a request can never supply a URL;
+- target ids only from the configured list or from the request's `custom_targets`;
+- each custom target: an id `custom-` plus 1 to 33 of `[a-z0-9-]`, unique, never a configured id; a URL of at most 2 KiB of printable ASCII, https only (http only where `LATTICE_PROBE_ALLOW_HTTP_TARGETS` allows it), absolute, with no credentials and no fragment; the scheme's own port or an explicit one from 1024 to 65535; an address literal must pass the same address policy as servers (global unicast, not in the deny prefixes, mapped and NAT64 forms included); a host name must be a fully qualified ASCII name with valid labels, not single-label, not ending in a dot or a numeric label (`127.1` and `0x7f.1` read as addresses to lenient resolvers), and not under a special-use or local-only suffix (`localhost`, `local`, `internal`, `test`, `invalid`, `example`, `onion`, `alt`, `arpa`, `lan`, `home`, `corp`, `intranet`, `localdomain`); method `GET` or `HEAD`; `expect_status` 1 to 16 statuses or ranges within 100 to 599; `body_contains` at most 256 bytes of UTF-8 without control characters, and only with `GET`;
+- a custom target's host name is resolved on the probe before the run, and the request is refused when the name does not resolve or any address it gives fails the address policy. This is a hint, not a guarantee: a target is fetched through the outbound under test with the name unresolved, so the proxy resolves it at the far end and may get another answer. The URL rules above are what always holds;
 - samples 1 to 10, `timeout_ms` 1000 to 30000, `throughput_bytes` at most 25,000,000;
 - no field ending in `_path` (`certificate_path`, `private_key_path`, ...): the probe never reads a file named by a request;
 - field names are what sing-box reads: top-level names exactly lowercase ASCII and no non-ASCII name at any depth. The sing-box decoder matches names case-insensitively with Unicode folding (`ſerver` decodes as `server`), so a folded name would let the policy, the response and the audit name one server while sing-box dials another;
@@ -91,7 +106,9 @@ Checked before anything connects:
 
 The address check is not only a parse-time check. Every outbound a request creates has its `detour` rewritten to an internal guard outbound, so all of its traffic (TCP, connected UDP for QUIC, and unconnected UDP) leaves through one dialer. The guard resolves names itself, refuses any address the policy refuses, and checks again in the socket's `Control` hook with the exact address the kernel is about to connect to. The address dialled is therefore always one that passed the check, even when a name rebinds between the parse-time check and the dial; `TestRebindingRefusedAtDialTime` proves it. `domain_resolver` is dropped from pasted outbounds for the same reason: the guard resolves server names.
 
-`LATTICE_PROBE_ALLOW_PREFIXES` (comma-separated CIDRs, empty by default) exempts prefixes from the address classes, for a lab network. It never opens unspecified or multicast addresses.
+`LATTICE_PROBE_ALLOW_PREFIXES` (comma-separated CIDRs, empty by default) exempts prefixes from the address classes, for a lab network. It never opens unspecified or multicast addresses. It applies to custom target addresses as it does to servers.
+
+Targets are fetched with redirects off, so the first answer is the one compared; a body is read at most to 1 MiB and never returned.
 
 ## Credentials and logs
 
@@ -114,8 +131,10 @@ Environment:
 | variable | default | meaning |
 |---|---|---|
 | `LATTICE_PROBE_SOCKET` | `/run/lattice-probe/probe.sock` | socket path |
-| `LATTICE_PROBE_TARGETS_FILE` | none | JSON `{"targets":[...]}` that replaces the built-in list; ids match `^[a-z0-9-]{1,40}$`, URLs are https |
+| `LATTICE_PROBE_TARGETS_FILE` | none | JSON `{"targets":[...]}` that replaces the built-in list; ids match `^[a-z0-9-]{1,40}$` and do not start with `custom-`, URLs are https |
 | `LATTICE_PROBE_ALLOW_PREFIXES` | none | CIDRs exempt from the address policy |
+| `LATTICE_PROBE_DENY_PREFIXES` | none | CIDRs always refused, such as the host's own public addresses; deny wins over allow |
+| `LATTICE_PROBE_ALLOW_HTTP_TARGETS` | false | `true` permits http:// custom targets, for a lab; leave it unset in production |
 
 `probectl`, built from `./cmd/probectl`, tests one outbound file in-process or against a running daemon:
 

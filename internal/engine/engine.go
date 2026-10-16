@@ -41,6 +41,8 @@ type Config struct {
 	Targets  []spec.Target
 	Policy   *policy.Policy
 	Resolver policy.Resolver
+	// AllowHTTPTargets permits http:// custom targets, for a lab only.
+	AllowHTTPTargets bool
 
 	TraceURL      string // exit check, default https://www.cloudflare.com/cdn-cgi/trace
 	DNSServer     string // UDP check, default 1.1.1.1:53
@@ -151,8 +153,11 @@ func coreVersion() string {
 // outbound did wrong is reported inside the Result.
 func (e *Engine) Run(ctx context.Context, req *spec.Request) (*spec.Result, error) {
 	began := time.Now()
-	plan, err := policy.Parse(req, e.cfg.Targets)
+	plan, err := policy.Parse(req, e.cfg.Targets, policy.TargetRules{Policy: e.cfg.Policy, AllowHTTP: e.cfg.AllowHTTPTargets})
 	if err != nil {
+		return nil, err
+	}
+	if err := e.checkTargetHosts(ctx, plan); err != nil {
 		return nil, err
 	}
 	res := &spec.Result{Targets: []spec.TargetResult{}, Engine: e.info(), Types: plan.Types()}
@@ -278,6 +283,33 @@ func (e *Engine) checkServers(ctx context.Context, plan *policy.Plan) error {
 			if r := e.cfg.Policy.Check(a); r != nil {
 				r.Host = ob.Host
 				return r
+			}
+		}
+	}
+	return nil
+}
+
+// checkTargetHosts resolves the host name of every custom target on the
+// probe and refuses the request when any address it gives is refused, or
+// when it does not resolve. It runs before anything is created. The proxy
+// resolves the name again at the far end and may get another answer, so
+// this is a hint against names that point into a local network, not a
+// guarantee; policy.CheckCustomTarget's rules are what always holds.
+func (e *Engine) checkTargetHosts(ctx context.Context, plan *policy.Plan) error {
+	for _, t := range plan.Targets {
+		if !t.Custom || t.Host == "" {
+			continue
+		}
+		rctx, cancel := context.WithTimeout(ctx, guardResolveTimeout)
+		addrs, err := e.cfg.Resolver.LookupNetIP(rctx, "ip", t.Host)
+		cancel()
+		if err != nil || len(addrs) == 0 {
+			return spec.Refuse(fmt.Sprintf("custom target %s: %s does not resolve from the probe, so it cannot be checked", t.ID, t.Host))
+		}
+		for _, a := range addrs {
+			if r := e.cfg.Policy.Check(a); r != nil {
+				r.Host = t.Host
+				return spec.Refuse(fmt.Sprintf("custom target %s: %s", t.ID, r.Error()))
 			}
 		}
 	}

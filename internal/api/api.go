@@ -69,6 +69,7 @@ func (s *Server) health(w http.ResponseWriter, _ *http.Request) {
 		Inflight:     s.inflight.Load(),
 		MaxInflight:  spec.MaxInflight,
 		Targets:      len(s.prober.Targets()),
+		Capabilities: []string{spec.CapabilityCustomTargets},
 	})
 }
 

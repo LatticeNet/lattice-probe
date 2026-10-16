@@ -171,6 +171,7 @@ func (r *run) sampleTargets(ctx context.Context) targetOutcome {
 	opt := r.httpOptions()
 	for ti, target := range r.plan.Targets {
 		tr := spec.TargetResult{ID: target.ID}
+		chk := measure.Check{URL: target.URL, Method: target.Method, Expect: target.Expect, BodyContains: target.BodyContains}
 		var colds, warms []float64
 		failsInRow := 0
 		for range r.plan.Samples {
@@ -178,14 +179,18 @@ func (r *run) sampleTargets(ctx context.Context) targetOutcome {
 				break
 			}
 			sctx, cancel := r.sampleCtx(ctx)
-			s := measure.HTTPSample(sctx, r.test, target.URL, target.Expect, opt)
+			s := measure.HTTPSample(sctx, r.test, chk, opt)
 			cancel()
 			tr.Of++
 			if s.Status != 0 {
 				tr.Status = s.Status
 				out.gotResponse = true
 			}
-			if s.OK(target.Expect) {
+			if s.BodyRead {
+				found := s.BodyFound || (tr.BodyMatch != nil && *tr.BodyMatch)
+				tr.BodyMatch = &found
+			}
+			if s.OK() {
 				tr.OK++
 				out.anyOK = true
 				failsInRow = 0
