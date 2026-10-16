@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -99,6 +100,11 @@ func (s *Server) probe(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, spec.StageRequest, "body is not a valid probe request: "+jsonProblem(err))
 		return
 	}
+	if name := foldedRequestField(body); name != "" {
+		s.logProbe(id, nil, spec.StageRequest, began)
+		writeError(w, http.StatusBadRequest, spec.StageRequest, "a field of the request differs from "+name+" only in letter case; write it exactly as "+name)
+		return
+	}
 	types := requestTypes(&req)
 
 	select {
@@ -163,6 +169,40 @@ func requestTypes(req *spec.Request) []string {
 		}
 	}
 	return types
+}
+
+// requestFields are the JSON names of spec.Request's fields.
+var requestFields = func() []string {
+	t := reflect.TypeOf(spec.Request{})
+	names := make([]string, 0, t.NumField())
+	for i := range t.NumField() {
+		name, _, _ := strings.Cut(t.Field(i).Tag.Get("json"), ",")
+		if name != "" && name != "-" {
+			names = append(names, name)
+		}
+	}
+	return names
+}()
+
+// foldedRequestField names the request field a top-level key of body reaches
+// although it is not written exactly as that field. encoding/json matches
+// names case-insensitively with Unicode folding, so "Custom_Targets" or
+// "cuſtom_targets" (U+017F) would fill CustomTargets while lattice-server,
+// which reads keys exactly, saw no such field and never checked who may set
+// it. Refusing them keeps the probe acting only on fields the server read.
+func foldedRequestField(body []byte) string {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(body, &fields) != nil {
+		return ""
+	}
+	for key := range fields {
+		for _, name := range requestFields {
+			if key != name && strings.EqualFold(key, name) {
+				return name
+			}
+		}
+	}
+	return ""
 }
 
 var callerID = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)

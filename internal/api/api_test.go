@@ -197,6 +197,35 @@ func TestCustomTargetsWire(t *testing.T) {
 	}
 }
 
+// TestFoldedFieldNamesRefused: a key encoding/json would fold onto a field
+// is refused, so the probe never acts on a field its caller did not write
+// exactly. Unknown fields stay ignored.
+func TestFoldedFieldNamesRefused(t *testing.T) {
+	p := &recordingProber{}
+	h := New(p, slog.New(slog.NewJSONHandler(io.Discard, nil))).Handler()
+	ob := `"outbounds":[{"type":"shadowsocks","tag":"a","server":"1.1.1.1","server_port":1}]`
+	for name, body := range map[string]string{
+		"title case": `{` + ob + `,"Custom_Targets":[]}`,
+		"long s":     `{` + ob + `,"cuſtom_targets":[]}`,
+		"targets":    `{` + ob + `,"TARGETS":["gstatic-204"]}`,
+		"outbounds":  `{"Outbounds":[]}`,
+	} {
+		rec := post(t, h, body)
+		if rec.Code != http.StatusBadRequest || decodeError(t, rec).Stage != spec.StageRequest || !strings.Contains(decodeError(t, rec).Message, "letter case") {
+			t.Errorf("%s: %d %s", name, rec.Code, rec.Body)
+		}
+	}
+	if p.got != nil {
+		t.Errorf("a refused request reached the engine: %+v", p.got)
+	}
+	if rec := post(t, h, `{`+ob+`,"note":"x"}`); rec.Code != http.StatusOK {
+		t.Errorf("an unknown field was refused: %d %s", rec.Code, rec.Body)
+	}
+	if len(requestFields) < 9 || requestFields[0] != "engine" {
+		t.Errorf("request fields %v", requestFields)
+	}
+}
+
 // TestLogsNeverCarryCredentials runs real probes that pass, fail on a
 // wrong password, fail to decode and are refused, and checks that neither
 // the log nor any error text the API returns contains a credential.

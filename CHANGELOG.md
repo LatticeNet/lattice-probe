@@ -13,6 +13,7 @@
 
 - Target ids in `LATTICE_PROBE_TARGETS_FILE` may no longer start with `custom-`, which is reserved for custom targets so the two lists can never share an id.
 - A request measures at most 16 targets, built-in and custom together.
+- A top-level request field written in another letter case, or with a character Unicode folds onto one of its letters (`Custom_Targets`, `cuſtom_targets`), is refused as malformed instead of being decoded into that field, so the probe never acts on a field its caller did not write exactly.
 
 ## 0.1.0-alpha.2 (2026-10-08)
 
