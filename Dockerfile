@@ -12,8 +12,10 @@ COPY . .
 # VERSION is the release without the leading v; empty keeps the version
 # compiled into internal/spec.
 ARG VERSION=
-ARG TARGETOS=linux
-ARG TARGETARCH=amd64
+# BuildKit sets these per target platform. They must stay without a value:
+# a default here overrides BuildKit's, and every platform then gets amd64.
+ARG TARGETOS
+ARG TARGETARCH
 RUN --mount=type=cache,target=/go/pkg/mod --mount=type=cache,target=/root/.cache/go-build \
     CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build \
       -trimpath \
