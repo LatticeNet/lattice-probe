@@ -50,5 +50,11 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: false
           provenance: false
+          outputs: type=local,dest=${{ runner.temp }}/image
           cache-from: type=gha
           cache-to: type=gha,mode=max
+      - name: check each platform carries its own binary
+        # alpha.4 and alpha.5 shipped the amd64 binary in the arm64 image.
+        run: |
+          file -b "$RUNNER_TEMP/image/linux_amd64/usr/local/bin/lattice-probe" | grep -F 'x86-64'
+          file -b "$RUNNER_TEMP/image/linux_arm64/usr/local/bin/lattice-probe" | grep -F 'ARM aarch64'
